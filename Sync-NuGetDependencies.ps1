@@ -120,6 +120,81 @@ end {
         return $null
     }
 
+    function Test-LegacyHintPaths {
+        param([string] $Project)
+        $xml = (Read-Document $Project).InitialXml
+        if ($xml.DocumentElement.HasAttribute('Sdk') -or
+            $null -ne $xml.SelectSingleNode("/*[local-name()='Project']/*[local-name()='Sdk']")) {
+            return
+        }
+
+        $packageIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        $config = Join-Path (Split-Path $Project -Parent) 'packages.config'
+        if (Test-Path -LiteralPath $config -PathType Leaf) {
+            [xml]$packages = Get-Content -LiteralPath $config -Raw
+            foreach ($package in $packages.SelectNodes('/packages/package')) {
+                [void]$packageIds.Add([string]$package.id)
+            }
+        }
+        foreach ($reference in $xml.SelectNodes("//*[local-name()='Reference']")) {
+            $assembly = ([string]$reference.GetAttribute('Include') -split ',', 2)[0].Trim()
+            $hintPaths = @($reference.SelectNodes("*[local-name()='HintPath']"))
+            if ($hintPaths.Count -eq 0) {
+                Write-Warning "Progetto legacy '$Project', riferimento '$assembly': HintPath mancante o vuoto."
+                continue
+            }
+            $fromNuGet = $packageIds.Contains($assembly)
+            foreach ($id in $packageIds) {
+                if ($id.StartsWith($assembly + '.', [StringComparison]::OrdinalIgnoreCase) -or
+                    $assembly.StartsWith($id + '.', [StringComparison]::OrdinalIgnoreCase)) {
+                    $fromNuGet = $true
+                    break
+                }
+            }
+            foreach ($hintNode in $hintPaths) {
+                $hint = $hintNode.InnerText.Trim()
+                if (-not $hint) {
+                    Write-Warning "Progetto legacy '$Project', riferimento '$assembly': HintPath mancante o vuoto."
+                    continue
+                }
+                if ($hint -match '\$\(|%[^%]+%') {
+                    Write-Warning "Progetto legacy '$Project', riferimento '$assembly': HintPath '$hint' contiene variabili non risolvibili staticamente."
+                    continue
+                }
+                if ([IO.Path]::IsPathRooted($hint) -or $hint -match '^[A-Za-z]:') {
+                    Write-Warning "Progetto legacy '$Project', riferimento '$assembly': HintPath '$hint' deve essere relativo."
+                    continue
+                }
+                try {
+                    $resolved = [IO.Path]::GetFullPath([IO.Path]::Combine((Split-Path $Project -Parent), $hint))
+                }
+                catch [System.ArgumentException] {
+                    Write-Warning "Progetto legacy '$Project', riferimento '$assembly': HintPath '$hint' non valido."
+                    continue
+                }
+                catch [System.NotSupportedException] {
+                    Write-Warning "Progetto legacy '$Project', riferimento '$assembly': HintPath '$hint' non valido."
+                    continue
+                }
+                catch [System.IO.PathTooLongException] {
+                    Write-Warning "Progetto legacy '$Project', riferimento '$assembly': HintPath '$hint' non valido."
+                    continue
+                }
+                if (($fromNuGet -or $hint -match '(^|[\\/])packages([\\/]|$)') -and
+                    $resolved -notmatch '(^|[\\/])packages([\\/]|$)') {
+                    Write-Warning "Progetto legacy '$Project', riferimento '$assembly': HintPath '$hint' non punta a una DLL sotto 'packages'."
+                }
+                if (($fromNuGet -or $hint -match '(^|[\\/])packages([\\/]|$)') -and
+                    [IO.Path]::GetExtension($resolved) -ine '.dll') {
+                    Write-Warning "Progetto legacy '$Project', riferimento '$assembly': HintPath '$hint' non punta a un file .dll."
+                }
+                if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+                    Write-Warning "Progetto legacy '$Project', riferimento '$assembly': HintPath '$hint' non trova il file '$resolved'."
+                }
+            }
+        }
+    }
+
     function Add-PackageElement {
         param([System.Xml.XmlDocument] $Xml, [string] $Type, [string] $Package, [string] $Version, [string] $Newline)
         $root = $Xml.DocumentElement
@@ -145,6 +220,7 @@ end {
     $actions = [System.Collections.Generic.List[object]]::new()
     $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $kinds = [System.Collections.Generic.Dictionary[string, string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $projectsToInspect = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($entry in $entries) {
         if ($null -eq $entry -or $null -eq $entry.PSObject.Properties['Package'] -or
             $null -eq $entry.PSObject.Properties['Occurrences']) {
@@ -155,11 +231,14 @@ end {
                 $null -eq $occurrence.PSObject.Properties['Kind']) {
                 throw "Report non valido: occorrenza di '$($entry.Package)' incompleta."
             }
-            $key = ([IO.Path]::GetFullPath([string]$occurrence.Project)) + '|' + $entry.Package
+            $projectPath = (Resolve-Path -LiteralPath $occurrence.Project -ErrorAction Stop).ProviderPath
+            $key = $projectPath + '|' + $entry.Package
             if ($kinds.ContainsKey($key)) { throw "Occorrenza duplicata nel report: '$key'." }
             $kinds[$key] = [string]$occurrence.Kind
+            [void]$projectsToInspect.Add($projectPath)
         }
     }
+    foreach ($project in $projectsToInspect) { Test-LegacyHintPaths $project }
     foreach ($entry in $entries) {
         foreach ($name in 'Package', 'ResolvedVersions', 'TransitiveMinimums', 'Occurrences') {
             if ($null -eq $entry -or $null -eq $entry.PSObject.Properties[$name]) {
@@ -349,7 +428,8 @@ end {
         throw "Riconciliazione interrotta senza modifiche: $($blocked.Count) interventi non sicuri. Eseguire -WhatIf per consultarli."
     }
     if ($actions.Count -eq 0) { return }
-    if (-not $PSCmdlet.ShouldProcess("$($documents.Keys.Count) file", "$($actions.Count) aggiornamenti NuGet")) { return }
+    $changedFiles = @($documents.Values | Where-Object Dirty)
+    if (-not $PSCmdlet.ShouldProcess("$($changedFiles.Count) file", "$($actions.Count) aggiornamenti NuGet")) { return }
 
     $written = [System.Collections.Generic.List[string]]::new()
     try {

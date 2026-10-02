@@ -42,6 +42,8 @@ Con `-WhatIf` **non viene scritto alcun file**: oltre all'anteprima standard di 
 
 I progetti con `packages.config`, i riferimenti importati o ambigui e le versioni definite da proprieta' MSBuild vengono indicati come `Blocked` in anteprima; l'esecuzione reale si interrompe **prima di qualsiasi modifica** se ne trova uno. Il solo aggiornamento di `packages.config` non garantirebbe che i riferimenti DLL e gli HintPath legacy siano aggiornati. Lo script controlla inoltre che le versioni dirette dichiarate non siano cambiate rispetto al report: rigenerare il report prima di un nuovo tentativo. Dopo l'applicazione, ripetere analisi e restore/build dei progetti reali per verificare compatibilita' e output delle DLL; l'analisi originaria usa un progetto temporaneo e non riproduce ogni opzione di build.
 
+Per ogni progetto **non SDK-style** presente nel report, `Sync-NuGetDependencies.ps1` controlla anche i riferimenti assembly `<Reference>` indipendentemente dalle azioni di riconciliazione. Emette warning per `HintPath` assente/vuoto, assoluto, contenente variabili MSBuild non risolvibili staticamente oppure relativo a un file inesistente (la base e' la directory del progetto). Quando il riferimento sembra provenire da NuGet, riconoscendolo tramite `packages.config` o un segmento `packages` nel percorso, segnala anche gli HintPath che non puntano a un file `.dll` sotto una cartella `packages`. I warning sono diagnostici: non correggono i file e, da soli, non bloccano le modifiche. `NuGet.Config` configura i feed, mentre `packages.config` elenca i pacchetti legacy; l'origine di ogni DLL non e' sempre determinabile con certezza dal solo XML.
+
 Il framework di consumo predefinito e' `net48`. Per ciascun progetto lo script valuta i riferimenti tramite MSBuild con il framework richiesto, ripristina un progetto SDK temporaneo in una sottocartella del progetto originale e legge il grafo risolto in `project.assets.json`. I progetti sorgente non vengono modificati; i file temporanei vengono eliminati, mentre NuGet puo' popolare la propria cache. Le cartelle sovrapposte non duplicano i progetti. Gli errori di restore o di valutazione interrompono l'analisi.
 
 Il risultato PowerShell e l'eventuale file JSON contengono una voce per pacchetto:
@@ -61,4 +63,5 @@ Per eseguire i test con restore NuGet reale:
 .\tests\Run-RenderTests.ps1
 .\tests\Run-SyncTests.ps1
 .\tests\Run-SyncIntegrationTests.ps1
+.\tests\Run-HintPathTests.ps1
 ```
