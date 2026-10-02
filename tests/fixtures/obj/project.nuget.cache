@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "4V/aGMDvt6s=",
+  "success": true,
+  "projectFilePath": "C:\\Sviluppo\\Utilities\\NETDependenciesHygene\\tests\\fixtures\\Modern.csproj",
+  "expectedPackageFiles": [
+    "D:\\packages\\nuget\\newtonsoft.json\\13.0.3\\newtonsoft.json.13.0.3.nupkg.sha512"
+  ],
+  "logs": []
+}
